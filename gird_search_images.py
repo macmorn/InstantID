@@ -82,6 +82,21 @@ controlnet_map_fn = {
     "depth": get_depth_map,
 }
 
+TARGET_IMAGES = [{"image": "",
+                  "prompt":"" ,
+                 },
+                 {"image": "",
+                  "prompt": "",
+                 },
+                 {"image": "",
+                  "prompt": "",
+                 },
+                 {"image": "",
+                  "prompt": "",
+                 },
+                 {"image": "",
+                  "prompt": "",
+                 },]
 
 def main(pretrained_model_name_or_path="wangqixun/YamerMIX_v8", enable_lcm_arg=False):
     #initialize a wandb run

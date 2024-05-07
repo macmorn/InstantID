@@ -759,8 +759,6 @@ class StableDiffusionXLInstantIDImg2ImgPipeline(StableDiffusionXLControlNetImg2I
             negative_prompt_embeds,
             pooled_prompt_embeds,
             negative_pooled_prompt_embeds,
-            None,
-            None,
             controlnet_conditioning_scale,
             control_guidance_start,
             control_guidance_end,

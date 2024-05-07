@@ -81,4 +81,4 @@ if __name__ == "__main__":
         strength=0.85
     ).images[0]
 
-    image.save('result.jpg')
+    image.save('result_img2img.jpg')

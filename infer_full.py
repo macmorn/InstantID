@@ -116,4 +116,4 @@ if __name__ == "__main__":
         guidance_scale=5,
     ).images[0]
 
-    image.save('result.jpg')
+    image.save('result_full.jpg')

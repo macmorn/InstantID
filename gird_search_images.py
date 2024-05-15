@@ -1,4 +1,5 @@
 import sys
+
 sys.path.append("./")
 
 from typing import Tuple
@@ -24,7 +25,9 @@ from huggingface_hub import hf_hub_download
 from insightface.app import FaceAnalysis
 
 from style_template import styles
-from pipeline_stable_diffusion_xl_instantid_full import StableDiffusionXLInstantIDPipeline
+from pipeline_stable_diffusion_xl_instantid_full import (
+    StableDiffusionXLInstantIDPipeline,
+)
 from model_util import load_models_xl, get_torch_device, torch_gc
 from controlnet_util import openpose, get_depth_map, get_canny_image
 
@@ -45,7 +48,7 @@ app = FaceAnalysis(
     root="./",
     providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
 )
-#app.prepare(ctx_id=0, det_size=(640, 640))
+# app.prepare(ctx_id=0, det_size=(640, 640))
 
 # Path to InstantID models
 face_adapter = f"./checkpoints/ip-adapter.bin"
@@ -82,24 +85,32 @@ controlnet_map_fn = {
     "depth": get_depth_map,
 }
 
-TARGET_IMAGES = [{"image": "",
-                  "prompt":"" ,
-                 },
-                 {"image": "",
-                  "prompt": "",
-                 },
-                 {"image": "",
-                  "prompt": "",
-                 },
-                 {"image": "",
-                  "prompt": "",
-                 },
-                 {"image": "",
-                  "prompt": "",
-                 },]
+TARGET_IMAGES = [
+    {
+        "image": "",
+        "prompt": "",
+    },
+    {
+        "image": "",
+        "prompt": "",
+    },
+    {
+        "image": "",
+        "prompt": "",
+    },
+    {
+        "image": "",
+        "prompt": "",
+    },
+    {
+        "image": "",
+        "prompt": "",
+    },
+]
+
 
 def main(pretrained_model_name_or_path="wangqixun/YamerMIX_v8", enable_lcm_arg=False):
-    #initialize a wandb run
+    # initialize a wandb run
     wandb.init(project="InstantID", job_type="gradio-demo")
 
     if pretrained_model_name_or_path.endswith(
@@ -334,7 +345,7 @@ def main(pretrained_model_name_or_path="wangqixun/YamerMIX_v8", enable_lcm_arg=F
         scheduler,
         enable_LCM,
         enhance_face_region,
-        face_detect_threshold= 0.50,
+        face_detect_threshold=0.50,
         progress=gr.Progress(track_tqdm=True),
     ):
 
@@ -366,7 +377,6 @@ def main(pretrained_model_name_or_path="wangqixun/YamerMIX_v8", enable_lcm_arg=F
 
         app.prepare(ctx_id=0, det_thresh=face_detect_threshold, det_size=(640, 640))
 
-
         face_image = load_image(face_image_path)
         face_image = resize_img(face_image, max_side=1024)
         face_image_cv2 = convert_from_image_to_cv2(face_image)
@@ -379,8 +389,13 @@ def main(pretrained_model_name_or_path="wangqixun/YamerMIX_v8", enable_lcm_arg=F
             raise gr.Error(
                 f"Unable to detect a face in the image. Please upload a different photo with a clear face."
             )
-        face_info = sorted(face_info, key=lambda x:(x['bbox'][2]-x['bbox'][0])*(x['bbox'][3]-x['bbox'][1]))[-1]  # only use the maximum face
-        #crop the face
+        face_info = sorted(
+            face_info,
+            key=lambda x: (x["bbox"][2] - x["bbox"][0]) * (x["bbox"][3] - x["bbox"][1]),
+        )[
+            -1
+        ]  # only use the maximum face
+        # crop the face
         face_cropped = face_image.crop(face_info["bbox"])
 
         face_emb = face_info["embedding"]
@@ -454,27 +469,30 @@ def main(pretrained_model_name_or_path="wangqixun/YamerMIX_v8", enable_lcm_arg=F
             width=width,
             generator=generator,
         ).images
-        wandb.log({
-            "parameters": {
-                "prompt": prompt,
-                "negative_prompt": negative_prompt,
-                "style_name": style_name,
-                "num_steps": num_steps,
-                "identitynet_strength_ratio": identitynet_strength_ratio,
-                "adapter_strength_ratio": adapter_strength_ratio,
-                "pose_strength": pose_strength,
-                "canny_strength": canny_strength,
-                "depth_strength": depth_strength,
-                "controlnet_selection": controlnet_selection,
-                "guidance_scale": guidance_scale,
-                "seed": seed,
-                "scheduler": scheduler,
-                "enable_LCM": enable_LCM,
-                "face_detect_threshold": face_detect_threshold
-            },
-            "source_images": [wandb.Image(face_image)],
-            "face_images": [wandb.Image(face_cropped)],
-            "generated_images": [wandb.Image(images[0])]})
+        wandb.log(
+            {
+                "parameters": {
+                    "prompt": prompt,
+                    "negative_prompt": negative_prompt,
+                    "style_name": style_name,
+                    "num_steps": num_steps,
+                    "identitynet_strength_ratio": identitynet_strength_ratio,
+                    "adapter_strength_ratio": adapter_strength_ratio,
+                    "pose_strength": pose_strength,
+                    "canny_strength": canny_strength,
+                    "depth_strength": depth_strength,
+                    "controlnet_selection": controlnet_selection,
+                    "guidance_scale": guidance_scale,
+                    "seed": seed,
+                    "scheduler": scheduler,
+                    "enable_LCM": enable_LCM,
+                    "face_detect_threshold": face_detect_threshold,
+                },
+                "source_images": [wandb.Image(face_image)],
+                "face_images": [wandb.Image(face_cropped)],
+                "generated_images": [wandb.Image(images[0])],
+            }
+        )
 
         return images[0], face_cropped, gr.update(visible=True)
 
@@ -551,7 +569,8 @@ def main(pretrained_model_name_or_path="wangqixun/YamerMIX_v8", enable_lcm_arg=F
 
                 submit = gr.Button("Submit", variant="primary")
                 enable_LCM = gr.Checkbox(
-                    label="Enable Fast Inference with LCM", value=enable_lcm_arg,
+                    label="Enable Fast Inference with LCM",
+                    value=enable_lcm_arg,
                     info="LCM speeds up the inference step, the trade-off is the quality of the generated image. It performs better with portrait face images rather than distant faces",
                 )
                 style = gr.Dropdown(
@@ -584,8 +603,10 @@ def main(pretrained_model_name_or_path="wangqixun/YamerMIX_v8", enable_lcm_arg=F
                 )
                 with gr.Accordion("Controlnet"):
                     controlnet_selection = gr.CheckboxGroup(
-                        ["pose", "canny", "depth"], label="Controlnet", value=["pose"],
-                        info="Use pose for skeleton inference, canny for edge detection, and depth for depth map estimation. You can try all three to control the generation process"
+                        ["pose", "canny", "depth"],
+                        label="Controlnet",
+                        value=["pose"],
+                        info="Use pose for skeleton inference, canny for edge detection, and depth for depth map estimation. You can try all three to control the generation process",
                     )
                     pose_strength = gr.Slider(
                         label="Pose strength",
@@ -649,7 +670,9 @@ def main(pretrained_model_name_or_path="wangqixun/YamerMIX_v8", enable_lcm_arg=F
                         value="EulerDiscreteScheduler",
                     )
                     randomize_seed = gr.Checkbox(label="Randomize seed", value=True)
-                    enhance_face_region = gr.Checkbox(label="Enhance non-face region", value=True)
+                    enhance_face_region = gr.Checkbox(
+                        label="Enhance non-face region", value=True
+                    )
 
             with gr.Column(scale=1):
                 gallery = gr.Image(label="Generated Images")
@@ -687,7 +710,7 @@ def main(pretrained_model_name_or_path="wangqixun/YamerMIX_v8", enable_lcm_arg=F
                     scheduler,
                     enable_LCM,
                     enhance_face_region,
-                    face_detect_threshold
+                    face_detect_threshold,
                 ],
                 outputs=[gallery, face, usage_tips],
             )

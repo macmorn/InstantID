@@ -1,0 +1,15 @@
+{
+    "subject_img_paths" : [[]],
+    "model_path" : [],
+    "lora": [{
+        "path" : "",
+        "prompt" : ""
+    }],
+    "prompt" : [],
+    "negative_prompt" : [],
+    "num_steps" : 0,
+    "guidance_scale" : 0,
+    "identitynet_strength_ratio" : 0,
+    "adapter_strength_ratio" : 0,
+    "seed" : 0
+}

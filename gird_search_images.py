@@ -30,8 +30,47 @@ from pipeline_stable_diffusion_xl_instantid_full import (
 from model_util import load_models_xl, get_torch_device, torch_gc
 from controlnet_util import openpose, get_depth_map, get_canny_image
 
-import wandb
 
+def create_image_grid(images1, images2, max_images_tall=5):
+    # Ensure both image lists are of the same length
+    assert len(images1) == len(images2), "Image arrays must be of the same length"
+
+    # Initialize variables
+    grid_rows = []
+    max_width = max_height = 0
+
+    # Process images in pairs
+    for i in range(0, len(images1)):
+        # Combine images side by side
+        total_width = images1[i].width + images2[i].width
+        max_height = max(images1[i].height, images2[i].height)
+        combined_image = Image.new("RGB", (total_width, max_height))
+        combined_image.paste(images1[i], (0, 0))
+        combined_image.paste(images2[i], (images1[i].width, 0))
+
+        # Update max dimensions
+        max_width = max(max_width, combined_image.width)
+        max_height =  max(max_height, combined_image.height)
+        
+        grid_rows.append(combined_image)
+
+    # Combine rows so no more than max_images_tall are in one column, put the rest next
+    total_height = min(max_height * max_images_tall, max_height * len(images1))
+    n_cols = int(len(images1) / max_images_tall) + (len(images1) % max_images_tall > 0)
+    final_width = n_cols * max_width
+    grid_image = Image.new("RGB", (final_width, total_height))
+    x_offset = 0
+    y_offset = 0
+    for i, row in enumerate(grid_rows):
+        if i % max_images_tall == 0 and i != 0:
+            x_offset += max_width
+            y_offset = 0
+        
+        grid_image.paste(row, (x_offset, y_offset))
+        y_offset += row.height
+
+
+    return grid_image
 
 def convert_from_cv2_to_image(img: np.ndarray) -> Image:
     return Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
@@ -147,7 +186,7 @@ class InstantIDModelPipe:
 
         # Load pipeline face ControlNetModel
         self.controlnet_identitynet = ControlNetModel.from_pretrained(
-            self.controlnet_path, torch_dtype=self.dtypedtype
+            self.controlnet_path, torch_dtype=self.dtype
         )
         self.pipe, self.current_model, self.current_lora = None, None, None
 
@@ -229,7 +268,9 @@ class InstantIDModelPipe:
         pipe.load_lora_weights("latent-consistency/lcm-lora-sdxl")
         pipe.disable_lora()
 
-        return pipe, pretrained_model_name_or_path, lora_path
+        self.pipe = pipe
+        self.current_model = pretrained_model_name_or_path
+        self.current_lora = lora_path
 
     def _generate_single_image(
         self,
@@ -373,17 +414,18 @@ class InstantIDModelPipe:
     def generate_subjects_image_grid(
         self,
         subject_image_path_list,
-        pose_image_path,
         prompt,
         negative_prompt,
         num_steps,
         identitynet_strength_ratio,
         adapter_strength_ratio,
-        pose_strength,
-        canny_strength,
-        depth_strength,
-        controlnet_selection,
         guidance_scale,
+        pose_image_path = None,
+        pose_strength = 0,
+        canny_strength = 0,
+        depth_strength = 0,
+        controlnet_selection = [],
+        **kwargs
     ):
         # make sure all the images exist
 
@@ -411,7 +453,7 @@ class InstantIDModelPipe:
                 guidance_scale,
             )
             images.append(image)
-            face_images.append(face_image)
+            face_images.append(Image.open(image_path))
 
         # create a grid of images with the face images and the generated images next to them
 
@@ -426,38 +468,47 @@ class InstantIDModelPipe:
             images_resized.append(resize_img(image, size=(256, 256)))
 
         # create a grid image with up to 5 images on each column and the face image on the left
-        grid_image = None
+        image_grid = create_image_grid(face_images_resized, images_resized)
 
-        for i in range(0, len(images_resized), 5):
-            images_row = images_resized[i : i + 5]
-            face_images_row = face_images_resized[i : i + 5]
+        return image_grid
+    
 
-            row_images = [face_images_row[0]]
-            row_images.extend(images_row)
 
-            row_images_pil = [convert_from_cv2_to_image(img) for img in row_images]
-            row_images_pil = [img.convert("RGB") for img in row_images_pil]
 
-            widths, heights = zip(*(i.size for i in row_images_pil))
+if __name__ == "__main__":
+    import json
+    from itertools import product
+    import wandb
 
-            total_width = sum(widths)
-            max_height = max(heights)
+    model = InstantIDModelPipe()
 
-            grid_image_row = Image.new("RGB", (total_width, max_height))
+    def generate_parameter_combinations(data):
+        
+        
+        # Prepare lists of parameters for itertools.product
+        keys = data.keys()
+        values = [data[key] for key in keys]
+        
+        # Generate and yield all combinations of parameters
+        for combination in product(*values):
+            yield dict(zip(keys, combination))
 
-            x_offset = 0
-            for img in row_images_pil:
-                grid_image_row.paste(img, (x_offset, 0))
-                x_offset += img.size[0]
+    search_template_path = "search_line_drawing.json"
+    with open(search_template_path, "r") as f:
+        parameter_dict = json.load(f)
 
-            if grid_image is None:
-                grid_image = grid_image_row
-            else:
-                grid_image = Image.new(
-                    "RGB", (grid_image.width, grid_image.height + grid_image_row.height)
-                )
-                grid_image.paste(
-                    grid_image_row, (0, grid_image.height - grid_image_row.height)
-                )
+    for i, parameters in enumerate(generate_parameter_combinations(parameter_dict)):
+        wandb.init(
+            project="InstantID_default ",
+            config=parameters,
+            name="Line_drawing"
 
-        return grid_image
+        )
+        if model.current_model != parameters["model_path"]:
+            model._initalize_pipeline(pretrained_model_name_or_path =parameters["model_path"])
+
+        image_grid = model.generate_subjects_image_grid(
+            **parameters
+        )
+
+        wandb.log({"summary_grid" : wandb.Image(image_grid, caption= f'g{parameters["guidance_scale"]}_i{parameters["identitynet_strength_ratio"]}_a{parameters["adapter_strength_ratio"]}_s{parameters["num_steps"]}')})

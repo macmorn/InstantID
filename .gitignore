@@ -166,3 +166,6 @@ models/
 .cog
 
 gradio_cached_examples
+
+examples
+wandb

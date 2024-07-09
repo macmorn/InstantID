@@ -216,8 +216,9 @@ class InstantIDModelPipe:
             "canny": get_canny_image,
             "depth": get_depth_map,
         }
+        self.lora = {}
 
-    def _initalize_pipeline(self, pretrained_model_name_or_path, lora_path=None):
+    def _initalize_pipeline(self, pretrained_model_name_or_path):
         if pretrained_model_name_or_path.endswith(
             ".ckpt"
         ) or pretrained_model_name_or_path.endswith(".safetensors"):
@@ -264,13 +265,17 @@ class InstantIDModelPipe:
 
         pipe.load_ip_adapter_instantid(self.face_adapter_path)
         # load and disable LCM
-        # TODO: Refactor this to support custom LORAs
-        pipe.load_lora_weights("latent-consistency/lcm-lora-sdxl")
-        pipe.disable_lora()
-
+        
         self.pipe = pipe
         self.current_model = pretrained_model_name_or_path
-        self.current_lora = lora_path
+
+    def _configure_lora(
+            self,
+            lora_dict
+    ):
+        self.pipe.load_lora_weights(pretrained_model_name_or_path_or_dict = lora_dict["path"] , adapter_name='style')
+        self.pipe.set_adapters(["style"], adapter_weights=[lora_dict["scale"]])
+        self.lora = lora_dict
 
     def _generate_single_image(
         self,
@@ -281,11 +286,11 @@ class InstantIDModelPipe:
         num_steps,
         identitynet_strength_ratio,
         adapter_strength_ratio,
-        pose_strength,
-        canny_strength,
-        depth_strength,
         controlnet_selection,
         guidance_scale,
+        pose_strength = 0,
+        canny_strength = 0,
+        depth_strength= 0,
         seed=42,
         scheduler="EulerDiscreteScheduler",
         enable_LCM=False,
@@ -300,7 +305,7 @@ class InstantIDModelPipe:
             )
             self.pipe.enable_lora()
         else:
-            self.pipe.disable_lora()
+            #self.pipe.disable_lora()
             scheduler_class_name = scheduler.split("-")[0]
 
             add_kwargs = {}
@@ -397,7 +402,7 @@ class InstantIDModelPipe:
 
         self.pipe.set_ip_adapter_scale(adapter_strength_ratio)
         images = self.pipe(
-            prompt=prompt,
+            prompt=self.lora.get("prompt", "") + prompt,
             negative_prompt=negative_prompt,
             image_embeds=face_emb,
             image=control_images,
@@ -409,6 +414,7 @@ class InstantIDModelPipe:
             width=width,
             generator=generator,
         ).images
+
         return images[0], face_cropped
 
     def generate_subjects_image_grid(
@@ -428,7 +434,6 @@ class InstantIDModelPipe:
         **kwargs
     ):
         # make sure all the images exist
-
         for image_path in subject_image_path_list:
             if not os.path.exists(image_path):
                 raise ValueError(f"Image {image_path} does not exist")
@@ -439,18 +444,18 @@ class InstantIDModelPipe:
         face_images = []
         for image_path in subject_image_path_list:
             image, face_image = self._generate_single_image(
-                image_path,
-                pose_image_path,
-                prompt,
-                negative_prompt,
-                num_steps,
-                identitynet_strength_ratio,
-                adapter_strength_ratio,
-                pose_strength,
-                canny_strength,
-                depth_strength,
-                controlnet_selection,
-                guidance_scale,
+                face_image_path=image_path,
+                pose_image_path=pose_image_path,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                num_steps=num_steps,
+                identitynet_strength_ratio=identitynet_strength_ratio,
+                adapter_strength_ratio=adapter_strength_ratio,
+                guidance_scale=guidance_scale,
+                pose_strength=pose_strength,
+                canny_strength=canny_strength,
+                depth_strength=depth_strength,
+                controlnet_selection=controlnet_selection,
             )
             images.append(image)
             face_images.append(Image.open(image_path))
@@ -476,6 +481,8 @@ class InstantIDModelPipe:
 
 
 if __name__ == "__main__":
+
+    SETTINGS_PATH = "product_concepts/line_drawing/searches/search_line_drawing lora_minimalist_pose.json"
     import json
     from itertools import product
     import wandb
@@ -493,7 +500,7 @@ if __name__ == "__main__":
         for combination in product(*values):
             yield dict(zip(keys, combination))
 
-    search_template_path = "search_line_drawing.json"
+    search_template_path = SETTINGS_PATH
     with open(search_template_path, "r") as f:
         parameter_dict = json.load(f)
 
@@ -501,11 +508,14 @@ if __name__ == "__main__":
         wandb.init(
             project="InstantID_default ",
             config=parameters,
-            name="Line_drawing"
+            name=SETTINGS_PATH.split("/")[-1].replace(".json","")
 
         )
         if model.current_model != parameters["model_path"]:
             model._initalize_pipeline(pretrained_model_name_or_path =parameters["model_path"])
+        if parameters.get("lora", None) and model.lora !=  parameters.get("lora", None):
+
+            model._configure_lora(parameters.get("lora", None))
 
         image_grid = model.generate_subjects_image_grid(
             **parameters

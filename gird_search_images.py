@@ -269,13 +269,15 @@ class InstantIDModelPipe:
         self.pipe = pipe
         self.current_model = pretrained_model_name_or_path
 
-    def _configure_lora(
+    def _configure_loras(
             self,
-            lora_dict
+            loras_array,
     ):
-        self.pipe.load_lora_weights(pretrained_model_name_or_path_or_dict = lora_dict["path"] , adapter_name='style')
-        self.pipe.set_adapters(["style"], adapter_weights=[lora_dict["scale"]])
-        self.lora = lora_dict
+        adapter_configs = {}
+        for i, lora_dict in enumerate(loras_array):
+            self.pipe.load_lora_weights(pretrained_model_name_or_path_or_dict = lora_dict["path"] , adapter_name=f'style_{i}')
+            adapter_configs[f"style_{i}"] = lora_dict["scale"]
+        self.pipe.set_adapters(list(adapter_configs.keys()), adapter_weights=list(adapter_configs.values()))
 
     def _generate_single_image(
         self,
@@ -401,6 +403,157 @@ class InstantIDModelPipe:
         print(f"[Debug] Prompt: {prompt}, \n[Debug] Neg Prompt: {negative_prompt}")
 
         self.pipe.set_ip_adapter_scale(adapter_strength_ratio)
+        prompt_tail = ""
+        if self.lora:
+            prompt_tail = " ".join([l.get("prompt", "") for l in self.lora])
+        images = self.pipe(
+            prompt=prompt + prompt_tail,
+            negative_prompt=negative_prompt,
+            image_embeds=face_emb,
+            image=control_images,
+            control_mask=control_mask,
+            controlnet_conditioning_scale=control_scales,
+            num_inference_steps=num_steps,
+            guidance_scale=guidance_scale,
+            height=height,
+            width=width,
+            generator=generator,
+        ).images
+
+        return images[0], face_cropped
+    
+    def _generate_with_n_faces(
+        self,
+        face_image_path,
+        pose_image_path,
+        prompt,
+        negative_prompt,
+        num_steps,
+        identitynet_strength_ratio,
+        adapter_strength_ratio,
+        controlnet_selection,
+        guidance_scale,
+        pose_strength = 0,
+        canny_strength = 0,
+        depth_strength= 0,
+        seed=42,
+        scheduler="EulerDiscreteScheduler",
+        enable_LCM=False,
+        enhance_face_region=False,
+        face_detect_threshold=0.50,
+        n_faces = 1
+    ):
+        assert self.pipe is not None, "Please initalize the pipeline first"
+
+        if enable_LCM:
+            self.pipe.scheduler = diffusers.LCMScheduler.from_config(
+                self.pipe.scheduler.config
+            )
+            self.pipe.enable_lora()
+        else:
+            #self.pipe.disable_lora()
+            scheduler_class_name = scheduler.split("-")[0]
+
+            add_kwargs = {}
+            if len(scheduler.split("-")) > 1:
+                add_kwargs["use_karras_sigmas"] = True
+            if len(scheduler.split("-")) > 2:
+                add_kwargs["algorithm_type"] = "sde-dpmsolver++"
+            scheduler = getattr(diffusers, scheduler_class_name)
+            self.pipe.scheduler = scheduler.from_config(
+                self.pipe.scheduler.config, **add_kwargs
+            )
+
+        self.app.prepare(
+            ctx_id=0, det_thresh=face_detect_threshold, det_size=(640, 640)
+        )
+
+        face_image = load_image(face_image_path)
+        face_image = resize_img(face_image, max_side=1024)
+        face_image_cv2 = convert_from_image_to_cv2(face_image)
+        height, width, _ = face_image_cv2.shape
+
+        # Extract face features
+        face_info = self.app.get(face_image_cv2)
+
+        if len(face_info) == 0:
+            raise ValueError(
+                f"Unable to detect a face in the image. Please upload a different photo with a clear face."
+            )
+        face_info_array = sorted(
+            face_info,
+            key=lambda x: x["bbox"][0],
+        )
+        assert len(face_info_array) == n_faces, "Number of faces in photo must match number specified"
+        face_multikps = []
+        for face_info in face_info_array:
+            # crop the face
+            face_cropped = face_image.crop(face_info["bbox"])
+
+            face_emb = face_info["embedding"]
+            face_kps = draw_kps(convert_from_cv2_to_image(face_image_cv2), face_info["kps"])
+            img_controlnet = face_image
+            face_multikps.append(face_kps)
+        if pose_image_path is not None:
+            pose_image = load_image(pose_image_path)
+            pose_image = resize_img(pose_image, max_side=1024)
+            img_controlnet = pose_image
+            pose_image_cv2 = convert_from_image_to_cv2(pose_image)
+
+            face_info = self.app.get(pose_image_cv2)
+
+            if len(face_info) == 0:
+                raise ValueError(
+                    f"Cannot find any face in the reference image! Please upload another person image"
+                )
+
+            face_info = face_info[-1]
+            face_kps = draw_kps(pose_image, face_info["kps"])
+
+            width, height = face_kps.size
+
+        if enhance_face_region:
+            control_mask = np.zeros([height, width, 3])
+            x1, y1, x2, y2 = face_info["bbox"]
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            control_mask[y1:y2, x1:x2] = 255
+            control_mask = Image.fromarray(control_mask.astype(np.uint8))
+        else:
+            control_mask = None
+
+        if len(controlnet_selection) > 0:
+            controlnet_scales = {
+                "pose": pose_strength,
+                "canny": canny_strength,
+                "depth": depth_strength,
+            }
+            self.pipe.controlnet = MultiControlNetModel(
+                [self.controlnet_identitynet]
+                + [self.controlnet_map[s] for s in controlnet_selection]
+            )
+            control_scales = [float(identitynet_strength_ratio)] + [
+                controlnet_scales[s] for s in controlnet_selection
+            ]
+            control_images = [face_kps] + [
+                self.controlnet_map_fn[s](img_controlnet).resize((width, height))
+                for s in controlnet_selection
+            ]
+        elif n_faces > 1:
+            self.pipe.controlnet = MultiControlNetModel(
+                [self.controlnet_identitynet for f in face_info_array])
+            control_scales =  [float(identitynet_strength_ratio) for f in face_info_array]
+            control_images = face_multikps
+        else:
+            self.pipe.controlnet = self.controlnet_identitynet
+            control_scales = [float(identitynet_strength_ratio) for f in face_info_array ]
+            control_images = face_kps
+
+        generator = torch.Generator(device=self.device).manual_seed(seed)
+
+        print("Start inference...")
+        print(f"[Debug] Prompt: {prompt}, \n[Debug] Neg Prompt: {negative_prompt}")
+
+        self.pipe.set_ip_adapter_scale(adapter_strength_ratio)
         images = self.pipe(
             prompt=self.lora.get("prompt", "") + prompt,
             negative_prompt=negative_prompt,
@@ -416,7 +569,7 @@ class InstantIDModelPipe:
         ).images
 
         return images[0], face_cropped
-
+    
     def generate_subjects_image_grid(
         self,
         subject_image_path_list,
@@ -431,6 +584,7 @@ class InstantIDModelPipe:
         canny_strength = 0,
         depth_strength = 0,
         controlnet_selection = [],
+        enhance_face_region = False,
         **kwargs
     ):
         # make sure all the images exist
@@ -456,6 +610,7 @@ class InstantIDModelPipe:
                 canny_strength=canny_strength,
                 depth_strength=depth_strength,
                 controlnet_selection=controlnet_selection,
+                enhance_face_region= enhance_face_region
             )
             images.append(image)
             face_images.append(Image.open(image_path))
@@ -482,7 +637,7 @@ class InstantIDModelPipe:
 
 if __name__ == "__main__":
 
-    SETTINGS_PATH = "product_concepts/line_drawing/searches/search_line_drawing lora_minimalist_pose.json"
+    SETTINGS_PATH = "product_concepts/line_drawing/searches/search_sketch_drawing_multilora_minimalist_pose_2.json"
     import json
     from itertools import product
     import wandb
@@ -513,12 +668,14 @@ if __name__ == "__main__":
         )
         if model.current_model != parameters["model_path"]:
             model._initalize_pipeline(pretrained_model_name_or_path =parameters["model_path"])
-        if parameters.get("lora", None) and model.lora !=  parameters.get("lora", None):
-
-            model._configure_lora(parameters.get("lora", None))
-
+        lora_data = parameters.get("lora", None)
+        if lora_data and model.lora !=  lora_data:
+            if type(parameters.get("lora", None))!= list:
+                lora_data = [lora_data]
+            model._configure_loras(lora_data)
+            model.lora = lora_data
         image_grid = model.generate_subjects_image_grid(
             **parameters
         )
 
-        wandb.log({"summary_grid" : wandb.Image(image_grid, caption= f'g{parameters["guidance_scale"]}_i{parameters["identitynet_strength_ratio"]}_a{parameters["adapter_strength_ratio"]}_s{parameters["num_steps"]}')})
+        wandb.log({"summary_grid" : wandb.Image(image_grid, caption= f'g{parameters["guidance_scale"]}_i{parameters["identitynet_strength_ratio"]}_a{parameters["adapter_strength_ratio"]}_s{parameters["num_steps"]}_e{int(parameters["enhance_face_region"])}')})
